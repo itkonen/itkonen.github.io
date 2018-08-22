@@ -1,0 +1,90 @@
+<html>
+
+<head>
+<meta charset='utf-8'>
+<title>Työttömät, trendi, kesäkuu 2018, 197000 henkeä</title>
+</head>
+
+<body>
+
+<script type="text/javascript">
+	var xhr = new XMLHttpRequest();
+	var url = "https://pxnet2.stat.fi/PXWeb/api/v1/fi/StatFin/statfin_tyti_pxt_001.px";
+	xhr.open("POST", url, true);
+	xhr.setRequestHeader("Content-Type", "application/json");
+	xhr.onreadystatechange = function () {
+ 		if (xhr.readyState === 4 && xhr.status === 200) {
+			var json = JSON.parse(xhr.responseText);
+  			console.log(json);
+  		}
+	};
+	var data = JSON.stringify({
+	"query": [
+		{
+		"code": "Vuosi",
+		"selection": {
+			"filter": "item",
+			"values": [
+			"2018"
+			]
+		}
+		},
+		{
+		"code": "Kuukausi-, vuosineljännes- ja vuosikeskiarvo",
+		"selection": {
+			"filter": "item",
+			"values": [
+			"01",
+			"02",
+			"03",
+			"04",
+			"05",
+			"06",
+			"07",
+			"08",
+			"09",
+			"10",
+			"11",
+			"12"
+			]
+		}
+		},
+		{
+		"code": "Sukupuoli",
+		"selection": {
+			"filter": "item",
+			"values": [
+			"S"
+			]
+		}
+		},
+		{
+		"code": "Ikäluokka",
+		"selection": {
+			"filter": "item",
+			"values": [
+			"T74"
+			]
+		}
+		},
+		{
+		"code": "Tiedot",
+		"selection": {
+			"filter": "item",
+			"values": [
+			"Tyottomyysaste"
+			]
+		}
+		}
+	],
+	"response": {
+		"format": "json"
+	}});
+	xhr.send(data);
+	
+</script>
+
+
+
+</body>
+</html>

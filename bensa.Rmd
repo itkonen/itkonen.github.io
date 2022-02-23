@@ -1,0 +1,537 @@
+---
+title: Bensan hinnoista
+author: Juha Itkonen
+date: 22.2.2022
+output:
+  html_document:
+    code_folding: hide
+lang: fi
+---
+
+```{r setup, include = FALSE}
+library(robonomistServer)
+library(tidyverse)
+library(tsibble)
+library(tempdisagg)
+library(lubridate)
+library(fable)
+library(DT)
+library(plotly)
+knitr::opts_chunk$set(cache = TRUE)
+theme_set(theme_bw())
+options(OutDec = ",")
+```
+
+## Bensiini käypiin hinoihin
+
+Tilastokeskuksen energiatilastoista löytyy aikasarja polttonesteiden kuluttajahinnoista ulottuen aina vuoteen 1988 asti, mutta se ei sisällä havaintoja viime kuukausilta. Sen sijaan kuluttajahintaindeksin tilastotauluista löytyy tieto hinnoista myös viime kuukausilta. Seuraavassa yhdistämme nämä tilastot, jotta saamme pidemmän aikasarjan.
+
+```{r bensa}
+bensa_energiatilasto <-
+  data("StatFin/ene/ehi/statfin_ehi_pxt_12ge.px", tidy_time = TRUE) |>
+  filter(Polttoneste == "Moottoribensiini 95 E 10, snt/l",
+         Tiedot == "Hinta") |>
+  mutate(value = value/100)
+
+## Energiatilasto on tarkempi
+max_time <- max(bensa_energiatilasto$time)
+
+bensa_khi <-
+  data("StatFin/hin/khi/kk/statfin_khi_pxt_11xx.px", tidy_time = TRUE) |>
+  filter(Hyödyke == "Bensiini 95 E 10, 1 l",
+         time > max_time)
+
+bensa <-
+  bind_rows(
+    select(bensa_energiatilasto, time, value),
+    select(bensa_khi, time, value)
+  ) |>
+  mutate(Tiedot = "Bensiini 95 E 10" ) |>
+  relocate(Tiedot, time, value)
+
+```
+
+## {.tabset}
+
+### Kuvio
+
+```{r, echo = FALSE, message = FALSE}
+
+bensa |>
+  ggplot(aes(time, value)) +
+  geom_line() +
+  scale_y_continuous(labels = ~format(.x, nsmall = 2), limits = c(0,2)) +
+  labs(title = "Bensiini 95 E10, kuluttajahinta", subtitle = "€/litra",
+       caption = "Lähde: Tilastokeskus.", x = NULL, y = NULL)
+ggsave("bensa_nimellinen.png", height = 4, scale = 0.9)
+```
+
+### Taulukko
+
+```{r, echo = FALSE}
+DT::datatable(bensa)
+```
+
+### Vuosikeskiarvo
+
+```{r vuosikeskiarvo}
+vuosikeskiarvo <-
+  bensa |>
+  group_by(Vuosi = year(time)) |>
+  summarize(Keskihinta = mean(value)) |>
+  mutate(Vuosimuutos = 100*(Keskihinta/lag(Keskihinta, order_by = Vuosi) - 1))
+
+```
+
+```{r, echo = FALSE}
+DT::datatable(vuosikeskiarvo ) |>
+  DT::formatRound(c("Keskihinta", "Vuosimuutos"))
+```
+
+
+
+## Bensiinin hinta suhteessa ansiotasoon
+
+Seuraavaksi bensiinin hinta suhteutetaan ansiotasoon käyttäen ansiotasoindeksiä. Ansiotasoindeksin julkaisuviive on hieman pidempi kuin hintatiedoilla, joten viimeisimpien havaintojen deflatoimiseksi ansiotasoindeksiä jatketaan ETS-malliin perustuvalla ennusteella. Ansiotasoindeksiä tuotetaan neljännesvuositasolla, joten muunnetaan kuukausisarjaksi Denton-Cholette-menetelmällä.
+
+```{r ati}
+ati <-
+  data_get("StatFin/pal/ati/nj/statfin_ati_pxt_11zt.px", tidy_time = TRUE) |>
+  mutate(time = yearquarter(time)) |>
+  as_tsibble(Tiedot, time)
+
+fcst <-
+  ati |>
+  model(ets = ETS(value ~ trend(method = "M"))) |>
+  forecast(h = 1)
+
+ati_ext <-
+  bind_rows(
+    ati,
+    fcst |>
+      as_tibble() |>
+      select(Tiedot, time, value = .mean)
+  ) |>
+  as.ts()
+
+ati_2021 <-
+  td(ati_ext ~ 1, conversion = "mean", to = 12, method = "denton-cholette") |>
+  predict() |>
+  as_tsibble() |>
+  rename(time = index) |>
+  mutate(Tiedot = "ATI", value = value/mean(value[year(time) == 2021]))
+
+reaali <-
+  bind_rows(bensa, as_tibble(ati_2021)) |>
+  pivot_wider(names_from = Tiedot) |>
+  drop_na(`Bensiini 95 E 10`) |>
+  mutate(Reaalihinta = `Bensiini 95 E 10`/ATI) |>
+  select(time, `Bensiini 95 E 10`, Reaalihinta)
+
+ka <- mean(reaali$Reaalihinta)
+```
+
+## {.tabset}
+
+### Kuvio
+
+```{r, echo = FALSE}
+reaali |>
+  ggplot(aes(time, Reaalihinta)) +
+  geom_hline(yintercept = ka, color = "grey") +
+  annotate("text", x = as.Date("2020-01-01"), y = ka, hjust = 1, vjust = -1,
+           label = "Keskiarvo", color = "darkgrey") +
+  geom_line() +
+  scale_y_continuous(labels = ~format(.x, nsmall = 2)) +
+  labs(title = "Bensiini 95 E10, hinta ansiotasoindeksillä deflatoituna",
+       subtitle = "€/litra vuoden 2021 ansiotasoon suhteutettuna",
+       caption = "Lähteet: Tilastokeskus ja omat laskelmat.", x = NULL, y = NULL)
+ggsave("bensa_reaalinen.png", height = 4, scale = 0.9)
+```
+
+### Taulukko
+
+```{r, echo = FALSE}
+DT::datatable(reaali) |>
+  DT::formatRound(c("Bensiini 95 E 10", "Reaalihinta"))
+```
+
+## Bensiinin hinta suhteessa kotitalouksien käytettävissä oleviin tuloihin
+
+Ansiotasoindeksi ei huomioi muuoksia tuloveroissa, tulonsiirroissa, muissa tuloissa tai säännöllisen työajan pituudessa. Nämä voidaan huomioida tarkastelemalla kotitalouksien käytettäviä tuloja tehtyä työtuntia kohden.
+
+```{r tulot, include = FALSE}
+
+tulot <-
+  data("StatFin/kan/vtp/statfin_vtp_pxt_11sf.px", tidy_time = TRUE) |>
+  filter(Tiedot == "Käypiin hintoihin, miljoonaa euroa",
+         Taloustoimi == "B6NS14 Käytettävissä oleva tulo, kotitaloudet, netto") |>
+  transmute(Tiedot = "Käytettävissä oleva tulo", time, value)
+
+tunnit <-
+  data("StatFin/kan/vtp/statfin_vtp_pxt_11ws.px", tidy_time = TRUE) |>
+  filter(
+    Taloustoimi == "E2 Tehdyt työtunnit (1 000 000 tuntia)",
+    Sektori == "S1 Koko kansantalous",
+    Toimiala == "Yhteensä",
+    Tiedot == "Alkuperäinen sarja"
+  ) |>
+  transmute(Tiedot = "Työtunnit", time, value)
+
+tuntitulot <-
+  bind_rows(tulot, tunnit) |>
+  pivot_wider(names_from = Tiedot) |>
+  mutate(
+    Vuosi = year(time),
+    `Tulo työtuntia kohden` = `Käytettävissä oleva tulo`/Työtunnit
+  ) |>
+  select(Vuosi, `Tulo työtuntia kohden`)
+
+## tuntitulot |>
+##   ggplot(aes(Vuosi, `Tulo työtuntia kohden`)) +
+##   geom_col() +
+##   labs(title = "Käytettävissä olevat tulot tehtyä työtuntia kohden",
+##        subtitle = "Euroa per työtunti", x = NULL, y = NULL)
+
+tuntitulot_fcst <-
+  tuntitulot |>
+  as_tsibble(index = Vuosi) |>
+  model(ets = ETS(`Tulo työtuntia kohden` ~ trend(method = "M"))) |>
+  forecast(h = 2) |>
+  as_tibble() |>
+  select(Vuosi, `Tulo työtuntia kohden` = .mean)
+
+tuntitulot_ext <-
+  bind_rows(
+    Tilasto = tuntitulot,
+    Ennuste= tuntitulot_fcst,
+    .id = "Tieto"
+  ) |>
+  filter(Vuosi >= 1988)
+
+tuntitulo_1988 <- with(tuntitulot_ext, `Tulo työtuntia kohden`[Vuosi == 1988]) |> round(2)
+tuntitulo_2022 <- with(tuntitulot_ext, `Tulo työtuntia kohden`[Vuosi == 2022]) |> round(2)
+tuntitulo_2022/tuntitulo_1988
+```
+
+Käytettävissä oleva tulo tehtyä työtuntia kohden oli `r tuntitulo_1988` euroa vuonna 1988 ja `r tuntitulo_2022` euroa vuonna 2022.
+
+
+```{r litrat}
+litraa_per_tunti <-
+  tuntitulot_ext |>
+  select(Vuosi, `Tulo työtuntia kohden`) |>
+  as_tsibble(index = as.integer(Vuosi)) |>
+  as.ts() |>
+  (\(.) {
+    td(. ~ 1,
+       conversion = "mean", to = 12, method = "denton-cholette")
+  })() |>
+   predict() |>
+   as_tsibble() |>
+   left_join(
+     bensa |>
+       transmute(index = yearmonth(time),
+                 `Bensiini 95 E 10` = value) |>
+       as_tsibble(index = index),
+     by = "index"
+   ) |>
+   mutate(`litraa per tunti` = value/`Bensiini 95 E 10`) |>
+   select(index, `litraa per tunti`) |>
+   drop_na()
+```
+
+## {.tabset}
+
+### Kuvio: Litraa/työtunti
+
+```{r, echo = FALSE}
+litraa_per_tunti |>
+  ggplot(aes(index, `litraa per tunti`)) +
+  geom_line() +
+  labs(title = "Monta litraa bensiiniä tunnin työllä saa?",
+       subtitle = "Litraa bensiiniä per työtunti", x = NULL, y = NULL)
+```
+
+### Taulukko: Litraa/työtunti
+
+
+```{r, echo = FALSE}
+litraa_per_tunti |>
+  as_tibble() |>
+  transmute(time = as.Date(index),
+            `litraa per tunti`) |>
+  DT::datatable() |>
+  DT::formatRound("litraa per tunti")
+```
+
+
+## {.tabset}
+
+### Kuvio: Käytettävissä olevat tulot/tehdyt työtunnit
+
+```{r, echo = FALSE}
+tuntitulot_ext |>
+  ggplot(aes(Vuosi, `Tulo työtuntia kohden`, fill = Tieto)) +
+  geom_col() +
+  labs(title = "Käytettävissä olevat tulot tehtyä työtuntia kohden",
+       subtitle = "Euroa per työtunti", x = NULL, y = NULL)
+```
+
+### Taulukko: Käytettävissä olevat tulot/tehdyt työtunnit
+
+```{r, echo = FALSE}
+DT::datatable(tuntitulot_ext) |>
+  DT::formatRound("Tulo työtuntia kohden")
+```
+
+## Polttoaineiden meno-osuus {.tabset}
+
+
+```{r menot}
+polttoaineiden_meno_osuus <-
+  data("StatFin/kan/vtp/statfin_vtp_pxt_127s.px", tidy_time = TRUE) |>
+  filter(Taloustoimi == "P31DCK Yksityiset kulutusmenot Suomessa, menona",
+         Kestävyysluokka == "Yhteensä",
+         Kulutusluokka %in% c("Yhteensä", "07.2.2 Yksityisajoneuvojen polttoaineet ja voiteluöljyt"),
+         Tiedot == "Käypiin hintoihin, miljoonaa euroa") |>
+  select(Kulutusluokka, time, value) |>
+  pivot_wider(names_from = Kulutusluokka) |>
+  mutate(`Meno-osuus` = 100*`07.2.2 Yksityisajoneuvojen polttoaineet ja voiteluöljyt`/Yhteensä)
+
+```
+
+### Kuvio
+
+```{r}
+polttoaineiden_meno_osuus |>
+  ggplot(aes(time, `Meno-osuus`)) +
+  geom_line() +
+  scale_y_continuous(limit = c(0, NA)) +
+  labs(title = "Polttoaineiden osuus kotitalouksien kulutusmenoista",
+       subtitle = "%",
+       caption = "Lähde: Tilastokeskus.", x=NULL,y=NULL)
+ggsave("bensa_meno_osuus.png", height = 4, scale = 0.9)
+```
+
+### Taulukko
+
+```{r}
+DT::datatable(polttoaineiden_meno_osuus) |>
+  DT::formatRound("Meno-osuus")
+```
+
+### Volyymisarja
+
+```{r}
+data("StatFin/kan/vtp/statfin_vtp_pxt_127s.px", tidy_time = TRUE) |>
+  filter(Taloustoimi == "P31DCK Yksityiset kulutusmenot Suomessa, menona",
+         Kestävyysluokka == "Yhteensä",
+         Kulutusluokka == "07.2.2 Yksityisajoneuvojen polttoaineet ja voiteluöljyt",
+         Tiedot == "Volyymisarja, viitevuosi  2020") |>
+  ggplot(aes(time, value)) +
+  geom_line() +
+  labs(title = "Yksityisajoneuvojen polttoaineet ja voiteluöljyt",
+       subtitle = "Volyymi viitevuoden 2020 hintoihin",
+       caption = "Lähde: Tilastokeskus.", x=NULL,y=NULL)
+```
+
+
+## Keskikulutuksen kehitys {.tabset}
+
+
+```{r bensankulutus}
+
+päästöt_ensi_wltp <-
+  data("traficom/Ensirekisteroinnit/080_ensirek_tau_108.px§MA1§Bensiini$§CO2", tidy_time=T) |>
+  select(Tieto, time, value)
+
+päästöt_ensi_nedc <-
+  data("StatFin/lii/merek/statfin_merek_pxt_11cy.px§Bensiini§CO2", tidy_time = TRUE)
+
+päästöt_ensi_nedc |>
+  filter(time %in% range(time))
+
+100*(113.6/180-1)
+
+päästöt_ensi_nedc_disagg <-
+  päästöt_ensi_nedc |>
+  mutate(time = yearmonth(time)) |>
+  as_tsibble(index = time) |>
+  as.ts() |>
+  (\(.) {
+    td(.[,"value"] ~ 1, conversion = "mean", to = 12, method = "denton-cholette")
+  })() |>
+   predict() |>
+   as_tsibble() |>
+   as_tibble() |>
+   transmute(Tieto = "CO2-päästöarvo g/km (NEDC)", time = as.Date(index), value) ## |>
+   ## filter(time < "2014-01-01")
+
+# Päättyykin jo vuoteen 2018
+## päästöt_ensi_kk <-
+##   data("traficom/Ensirekisteroinnit/100_ensirek_tau_110.px§MA1§Bensiini$§§CO2") |>
+##   mutate(time = parse_date(Kuukausi, "%YM%m")) |>
+##   select(Tieto, time, value)
+
+bensankulutus <-
+  bind_rows(päästöt_ensi_nedc_disagg, päästöt_ensi_wltp) |>
+  mutate(
+    `Bensankulutus, l/100 km` = value / 2.335 / 10
+  )
+
+```
+
+### Ensirekisteröityjen autojen päästöt
+
+```{r}
+
+bensankulutus |>
+  ggplot(aes(time, `Bensankulutus, l/100 km`, color = Tieto)) +
+  geom_line() +
+  scale_x_date(breaks = "2 years", date_labels = "%Y") +
+  theme(legend.position = "bottom") +
+  labs(title = "Ensirekisteröityjen bensiiniautojen keskimääräinen kulutus",
+       subtitle = "Litraa per 100 kilometriä",
+       caption = "Lähteet: Tilastokeskus (NEDC, disaggregoitu) ja Trafi (WLTP).",
+       x=NULL,y=NULL)
+
+```
+
+### Taulukko
+
+```{r}
+bensankulutus |>
+  rename(`CO2-päästöarvo g/km` = value) |>
+  DT::datatable() |>
+  DT::formatRound(3:4)
+```
+
+### Ajoneuvokannan päästöt
+
+```{r}
+## Lähde: https://liikennefakta.fi/fi/ymparisto/henkiloautot/hiilidioksidipaastot
+
+päästöt_liikennekäytössä <-
+  read_csv2("vuodesta-2020-keskimrist.csv", col_type = cols(
+    Category = col_double(),
+    `Liikennekäytössä olevien henkilöautojen hiilidioksidipäästöt` = col_double()
+  )) |>
+  mutate(
+    Vuosi = make_date(Category),
+    value = `Liikennekäytössä olevien henkilöautojen hiilidioksidipäästöt`
+  )
+
+päästöt_liikennekäytössä |>
+  ggplot(aes(Vuosi, value)) +
+  geom_line() +
+  labs(title = "Liikennekäytössä olevien henkilöautojen hiilidioksidipäästöt",
+       subtitle = "CO2-päästöarvo g/km (NEDC)",
+       caption = "Lähde: Liikennefakta.",
+       x=NULL,y=NULL)
+
+```
+
+## Ajamisen kustannus 100 km ajamiseen tarvitut työtunnit {.tabset}
+
+
+```{r}
+reaalikustannus <-
+  data("StatFin/lii/merek/statfin_merek_pxt_11cy.px§Bensiini§§CO2") |>
+  mutate(
+    Vuosi = as.integer(Vuosi),
+    `Bensankulutus, l/100 km` = value / 2.335 / 10
+  ) |>
+  left_join(select(vuosikeskiarvo, Vuosi, Keskihinta), by = "Vuosi") |>
+  left_join(tuntitulot, by = "Vuosi") |>
+  mutate(
+    Vuosi = make_date(Vuosi),
+    `Ajamisen kustannus, €/100 km` = `Bensankulutus, l/100 km` * Keskihinta,
+    `Ajamisen kustannus, tuntia/100 km` = `Ajamisen kustannus, €/100 km` / `Tulo työtuntia kohden`
+  )
+```
+
+### Ajamisen kustannus työtunneissa
+
+```{r}
+
+reaalikustannus |>
+  ggplot(aes(Vuosi, `Ajamisen kustannus, tuntia/100 km`)) +
+  scale_y_continuous(limits = c(0,NA)) +
+  scale_x_date(breaks = "2 years", date_labels = "%Y") +
+  geom_line() +
+  labs(title = "Ajamisen reaalinen kustannus",
+       subtitle = "Tehtyä työtuntia per 100 km",
+       caption = "Lähteet: Tilastokeskus, Trafi ja omat laskelmat.",
+       x=NULL,y=NULL)
+ggsave("bensa_reaalinen_tunneissa.png", height = 4, scale = 0.9)
+```
+
+### Taulukko
+
+```{r}
+reaalikustannus |>
+  select(Vuosi, starts_with("Ajamisen kustannus")) |>
+  DT::datatable() |>
+  DT::formatRound(2:3)
+```
+
+
+### Ajamisen kustannus euroissa
+
+```{r}
+reaalikustannus |>
+  ggplot(aes(Vuosi, `Ajamisen kustannus, €/100 km`)) +
+  scale_y_continuous(limits = c(0,NA)) +
+  scale_x_date(breaks = "2 years", date_labels = "%Y") +
+  geom_line() +
+  labs(title = "Ajamisen reaalinen kustannus",
+       subtitle = "Euroa per 100 km", x=NULL,y=NULL)
+```
+
+100 kilometrin matkaan tarvittava työmäärä oli vuonna 2020 noin 17 minuuttia, kun vuonna 2006 oli noin 30 minuuttia. Toisin sanoen autolla ajamisen reaalikustannus puolittui 15 vuodessa.
+
+## Polttoaineiden meno-osuus väestöryhmittäin
+
+```{r, include = FALSE}
+meno_osuudet <- function(id, ryhmä) {
+  p <- data(id) |>
+    filter(
+      Kulutusmenot %in% c("A0722  Poltto- ja voiteluaineet (KR)",
+                          "A01_12  Kulutusmenot"),
+      Hinta == "Käyvin hinnoin",
+      Kulutustyyppi == "Kotitalous"
+    ) |>
+    select(-Hinta, -Kulutustyyppi) |>
+    pivot_wider(names_from = Kulutusmenot) |>
+    mutate(`Meno-osuus` = `A0722  Poltto- ja voiteluaineet (KR)`/`A01_12  Kulutusmenot`) |>
+    select(-`A0722  Poltto- ja voiteluaineet (KR)`, -`A01_12  Kulutusmenot`) |>
+    rename(Ryhmä = ryhmä) |>
+    mutate(Vuosi = as.integer(Vuosi)) |>
+    ggplot(aes(Vuosi, `Meno-osuus`, color = Ryhmä)) +
+    geom_line() +
+    scale_y_continuous(limits = c(0,0.06)) +
+    labs(title = ryhmä)
+
+  ggplotly(p)
+}
+
+p <-
+  tribble(
+  ~id, ~ryhmä,
+  "StatFin/tul/ktutk/statfin_ktutk_pxt_001.px", "Kotitaloustyyppi",
+  "StatFin/tul/ktutk/statfin_ktutk_pxt_002.px", "Viitehenkilön sosioekonominen asema",
+  "StatFin/tul/ktutk/statfin_ktutk_pxt_003.px", "Alue",
+  "StatFin/tul/ktutk/statfin_ktutk_pxt_004.px", "Taajama-aste",
+  "StatFin/tul/ktutk/statfin_ktutk_pxt_005.px", "Viitehenkilön ikä",
+  "StatFin/tul/ktutk/statfin_ktutk_pxt_006.px", "Kotitalouden koko ja rakenne",
+  "StatFin/tul/ktutk/statfin_ktutk_pxt_007.px", "Tuloviidennes"
+  ) |>
+  pmap(meno_osuudet)
+
+```
+
+```{r}
+do.call(htmltools::tagList, p)
+
+```

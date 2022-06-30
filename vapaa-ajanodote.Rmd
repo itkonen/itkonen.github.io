@@ -1,0 +1,196 @@
+---
+title: Vastasyntyneen vapaa-ajanodote
+author: Juha Itkonen
+date: 2022-06-26
+lang: fi_FI
+output:
+  html_document
+---
+
+```{r setup, include = FALSE}
+library(tidyverse)
+library(robonomistServer)
+expand_index <- function(base, new, time, joint_point) {
+  coalesce(
+    base,
+    new/new[time == joint_point]*base[time == joint_point]
+  )
+}
+```
+
+Alkuun taustatiedoksi lasketaan kansantalouden tilinpidon historiasarjoista tieto työajan osuuden kehityksestä.
+
+```{r, out.width = "100%"}
+historia <-
+  data("StatFin/vtp/statfin_vtp_pxt_129i.px§Yhteensä§^(EP|E1|E2)§(Tuh|Milj)",
+       tidy_time = TRUE) |>
+  drop_na() |>
+  pivot_wider(names_from = c("Taloustoimi", "Tiedot")) |>
+  transmute(
+    time,
+    Työtunnit =
+      1000*1000*`E2 Tehdyt työtunnit (1 000 000 tuntia)_Miljoonaa tuntia (ESA2010)` |>
+      expand_index(
+        `E2 Tehdyt työtunnit (1 000 000 tuntia)_Miljoonaa tuntia`,
+        time, "1975-01-01"
+      ) |>
+      expand_index(
+        `E2 Tehdyt työtunnit (1 000 000 tuntia)_Tuhatta työvuotta`,
+        time, "1960-01-01"
+      ),
+    Työlliset = expand_index(
+      1000*`E1 Työlliset, kotimaa (1000 henkeä)_Tuhatta henkilöä (ESA2010)`,
+      `E1 Työlliset, kotimaa (1000 henkeä)_Tuhatta henkilöä`,
+      time, "1975-01-01"
+    ),
+    `Työtunnit/työlliset` = Työtunnit/Työlliset,
+    `Työtunnit/työlliset_alt` = coalesce(
+      1000*`E2 Tehdyt työtunnit (1 000 000 tuntia)_Miljoonaa tuntia (ESA2010)`/`E1 Työlliset, kotimaa (1000 henkeä)_Tuhatta henkilöä (ESA2010)`,
+      `E2 Tehdyt työtunnit (1 000 000 tuntia)_Miljoonaa tuntia`/`E1 Työlliset, kotimaa (1000 henkeä)_Tuhatta henkilöä`
+    ),
+    Keskiväkiluku = 1000*`EP Keskiväkiluku (1000 henk.)_Tuhatta henkilöä`,
+    Väestötunnit = Keskiväkiluku* as.integer(difftime(time + lubridate::years(1), time, units = "hours")),
+    `Työajan osuus` = Työtunnit/Väestötunnit
+  ) |>
+  pivot_longer(-time)
+
+historia |>
+  filter(time >= "1960-01-01") |>
+  filter(name %in% c("Työajan osuus", "Työtunnit/työlliset")) |>
+  ggplot(aes(time, value)) +
+  geom_line() +
+  facet_wrap(~name, scales = "free_y")
+
+```
+
+Lasketaan keskityöaika työvoimatutkimuksen tiedoista sukupuolittain.
+
+```{r}
+Keskityöaika <-
+  data("StatFin_Passiivi/tym/tyti/statfinpas_tyti_pxt_11pw_2020.px§(M|N)§Yhteensä§Työl", tidy_time = TRUE) |>
+  pivot_wider(names_from = Tiedot) |>
+  drop_na() |>
+  mutate(Keskityöaika = `Työllisten tehdyt työtunnit, 1000 tuntia`/`Työlliset, 1000 henkilöä`) |>
+  select(Sukupuoli, time, Keskityöaika)
+
+Keskityöaika |>
+  ggplot(aes(time, Keskityöaika, color = Sukupuoli)) +
+  geom_line()
+```
+
+Jatketaan työvoimatutkimuksen tietoja miesten ja naisten työtunneista kansantalouden tilinpidon tiedoilla olettan, että suhteelliset vuosimuutokset ovat olleet molemmilla sukupuolilla samat.
+
+```{r}
+Keskityöaika_vtp <-
+  data("StatFin/vtp/statfin_vtp_pxt_11ws.px§(E1 |E2 )§S1 §Yhteensä", tidy_time = TRUE) |>
+  pivot_wider(names_from = "Taloustoimi") |>
+  mutate(
+    value = 1000*`E2 Tehdyt työtunnit (1 000 000 tuntia)`/`E1 Työlliset, kotimaa (1000 henkeä)`
+  ) |>
+  select(time, value)
+
+Keskityöaika_ext <-
+  Keskityöaika |>
+  nest(data = -Sukupuoli) |>
+  mutate(data = map(data, ~{
+    full_join(.x, Keskityöaika_vtp, by = "time") |>
+      arrange(time) |>
+      mutate(Keskityöaika = expand_index(Keskityöaika, value, time, "2005-01-01")) |>
+      select(time, Keskityöaika)
+  })) |>
+  unnest(data)
+
+Keskityöaika_ext |>
+  ggplot(aes(time, Keskityöaika, color = Sukupuoli)) +
+  geom_line() +
+  labs(title = "Keskityötunnit sukupuolittain,\njatkettu tilinpidon tiedoilla")
+
+```
+
+Lasketaan väestön rakennetilastoista työllisten osuus ikäluokittain.
+
+```{r}
+Työllisten_osuus <-
+  data("StatFin/tyokay/statfin_tyokay_pxt_115c.px§(Työlliset|Yhteensä)§(N|M)", tidy_time = TRUE) |>
+  filter(!Ikä %in% c("Yhteensä", "100 -")) |>
+  pivot_wider(names_from = `Pääasiallinen toiminta`) |>
+  mutate(
+    value = Työlliset/Yhteensä,
+    Ikä = parse_integer(Ikä)
+  ) |>
+  select(Sukupuoli, Ikä, time, `Työllisten osuus` = value)
+
+Työllisten_osuus |>
+  filter(lubridate::year(time) == 2020) |>
+  ggplot(aes(Ikä, `Työllisten osuus`, color = Sukupuoli)) + geom_line()
+```
+
+Lasketaan kuolleisuustilastoista elinajanodote (varmistuksen vuoksi) ja vapaa-ajanodote yhdistämällä tiedot työllisten osuuksista ja keskityöajasta.
+
+```{r}
+Työodote <-
+  data("StatFin/kuol/statfin_kuol_pxt_12ap.px§(N|M)", tidy_time = TRUE) |>
+  pivot_wider(names_from = Tiedot) |>
+  filter(time >= "1987-01-01") |>
+  mutate(
+    Ikä = as.integer(Ikä),
+    Kuolemanvaara = `Kuolemanvaara, promillea`/1000,
+    Elossa = `Elossa olevat 100 000 elävänä syntyneestä`/100000
+  ) |>
+  left_join(Työllisten_osuus, by = c("Sukupuoli", "Ikä", "time")) |>
+  left_join(Keskityöaika_ext, by = c("Sukupuoli", "time")) |>
+  with_groups(
+    c(Sukupuoli, time), summarise,
+    Elinajanodote =
+      sum(if_else(Ikä != 100,
+      (Kuolemanvaara*0.5 + (1-Kuolemanvaara))*Elossa,
+      Elossa*`Elinajanodote, vuosia`
+    )),
+    Työllisyysodote = sum(`Työllisten osuus` * (Kuolemanvaara*0.5 + (1-Kuolemanvaara))*Elossa, na.rm = TRUE),
+    Työtuntiodote = sum(Keskityöaika * `Työllisten osuus` * (Kuolemanvaara*0.5 + (1-Kuolemanvaara))*Elossa, na.rm = TRUE)
+  ) |>
+  mutate(
+    `Työllisten vuosien osuus` = Työllisyysodote/Elinajanodote,
+    `Työajan osuus` = Työtuntiodote/(Elinajanodote*24*365.25),
+    `Vapaa-ajanodote` = Elinajanodote*(1-`Työajan osuus`)
+  )
+
+Työodote |>
+  filter(time == max(time)) |>
+  glimpse()
+```
+
+```{r}
+Työodote |>
+  ggplot(aes(time, Työllisyysodote, color = Sukupuoli)) + geom_line()
+```
+
+```{r}
+Työodote |>
+  ggplot(aes(time, Työtuntiodote, color = Sukupuoli)) + geom_line()
+```
+
+```{r}
+Työodote |>
+  ggplot(aes(time, `Työllisten vuosien osuus`, color = Sukupuoli)) + geom_line()
+```
+
+```{r}
+Työodote |>
+  ggplot(aes(time, `Työajan osuus`, color = Sukupuoli)) + geom_line()
+```
+
+```{r}
+Työodote |>
+  ggplot(aes(time, `Vapaa-ajanodote`, color = Sukupuoli)) +
+  geom_line() +
+  scale_y_continuous(breaks = seq(0, 100, by = 2)) +
+  labs(
+    title = "Vastasyntyneen vapaa-ajanodote Suomessa",
+    subtitle = "Vuotta",
+    caption = "Lähteet: Tilastokeskus ja omat laskelmat.",
+    x = NULL, y = NULL
+  )
+```
+
+

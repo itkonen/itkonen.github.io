@@ -1,0 +1,229 @@
+---
+title: Opettajien kesätyöttömyys
+author: Juha Itkonen
+date: 26.10.2022
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include = FALSE}
+library(robonomistServer)
+library(tidyverse)
+library(lubridate)
+library(tsibble)
+library(feasts)
+library(fable)
+library(reactable)
+knitr::opts_chunk$set(fig.width = 9.5)
+theme_set(theme_bw())
+```
+
+Seuraavassa lasketaan arvio opettajien kesätyöttömyydelle eriteltynä ammattiluokittain perustuen työnvälitystilaston työttömien työnhakijoiden määrään. Suhdanne ja trendivaihteluiden vaikutusten poistamiseksi arvio perustuu kausitasoitusmallin kuukausikomponenttien erotukseen kesäloman ja lukukausien aikana.
+
+Haetaan työnvälitystilastosta työttömien työnhakijoiden määrä kuukausittain opettajien ammattiluokan 23 alaluokille.
+
+```{r, cache = TRUE}
+u <-
+  data("StatFin/tyonv/statfin_tyonv_pxt_12ti.px", tidy_time = TRUE) |>
+  filter(Alue == "KOKO MAA",
+         Tiedot == "Työttömät työnhakijat laskentapäivänä (lkm.)") |>
+  filter(str_starts(Ammattiryhmä, "23")) |>
+  replace_na(list(value = 0)) |>
+  mutate(
+    time = yearmonth(time),
+    Ammattiryhmä =
+      fct_other(
+        Ammattiryhmä,
+        keep = c(
+          "2320 Ammatillisen koulutuksen opettajat",
+          "2330 Lukion ja peruskoulun yläluokkien opettajat",
+          "2341 Peruskoulun alaluokkien opettajat",
+          "2342 Lastentarhanopettajat",
+          "2352 Erityisopettajat"
+        ),
+        other_level = "Muut opettajat ja opetusalan erityisasiantuntijat"
+      )
+  ) |>
+  group_by(Ammattiryhmä, time) |>
+  summarise(value = sum(value), .groups = "drop") |>
+  as_tsibble(key = Ammattiryhmä, index = time)
+
+u |>
+  ggplot(aes(time, value, color = Ammattiryhmä)) +
+  geom_line() +
+  labs(
+    title = "Työttömät työnhakijat opettajien ammattiryhmissä",
+    subtitle = "Henkeä kuukauden lopussa",
+    caption = "Lähde: TEM.",
+    colour = "Ammattiryhmä", x=NULL,y=NULL)
+```
+
+Testataan kolmea eri vaihtoehtoista kausitasoitusmallia. Mallit tuottavat verrattain samanlaisen hajoitelman aikasarjoille (lukuun ottamatta trendin erottelua koronakevään 2020 aikana).
+
+```{r, message = FALSE, warning = FALSE}
+seasonal_components <-
+  u |>
+  model(stl = STL(value ~ trend(window = 13) + season()),
+        x11 = X_13ARIMA_SEATS(value ~ x11()),
+        seats = X_13ARIMA_SEATS(value ~ seats())) |>
+  components()
+
+autoplot(seasonal_components)
+```
+
+STL-hajoitelman mukainen trendi:
+
+```{r}
+seasonal_components |>
+  filter(.model == "stl") |>
+  ggplot(aes(x = time)) +
+  geom_line(aes(y = value, color = "Alkuperäinen")) +
+  geom_line(aes(y = trend, color = "Trendi (STL)")) +
+  facet_wrap(~Ammattiryhmä, scales = "free_y") +
+  labs(
+    title = "Työttömät työnhakijat opettajien ammattiryhmissä",
+    subtitle = "Henkeä kuukauden lopussa",
+    caption = "Lähteet: TEM ja Robonomistin laskelmat.",
+    colour = "Aikasarja", x = NULL, y = NULL
+  )
+```
+
+Piirretään kausitasoitusmallin kuukausikomponentit:
+
+```{r}
+seasonal_components |>
+  filter(.model == "stl") |>
+  as_tibble() |>
+  mutate(
+    Kuukausi = month(time),
+    Vuosi = year(time)
+  ) |>
+  ggplot(aes(Kuukausi, season_year, color = Vuosi, group = Vuosi)) +
+  geom_line() +
+  scale_x_continuous(breaks = 1:12) +
+  scale_colour_continuous(trans = "reverse") +
+  facet_wrap(~Ammattiryhmä, scales = "free_y") +
+  labs(
+    title = "Työttömien työnhakijoiden määrän kausikomponentti ammattiryhmittäin",
+    subtitle = "Henkeä kuukauden lopussa, poikkeama trendistä",
+    caption = "Lähteet: TEM ja Robonomistin laskelmat.",
+    y = NULL
+  )
+
+```
+
+Kuviosta havaitaan, että kesätyöttömyys on suurimmillaan kesä- ja heinäkuun lopulla. Ammatillisen koulutuksen, lukion ja peruskoulun yläluokkien opettajilla työttömyys on poikkeavan suurta myös touko- ja elokuun lopulla. Lisäksi joulukuussa työttömyys on tavallista suurempaa.
+
+Lisäksi havaitaan, että peruskoulun alaluokkien opettajien, lastentarhanopettajien ja erityisopettajien ammattiluokissa kesätyöttömyys on lisääntynyt viime vuosikymmenellä. Ammatillisen koulutuksen, lukion ja peruskoulun yläluokkien opettajilla kesätyöttömyys on aavistuksen vähentynyt.
+
+
+Seuraavassa määritellään kesätyöttömyyden mittari kausitasoitusmallin kuukausikomponenttien avulla. Mittari suhteuttaa heinäkuun työttömyyden kausipoikkeaman lukukausien aikaisen työttömyyden erotuksena. Lukukausien normaali työttömyys on laskettu keskiarvona tammi-huhtikuun sekä syys-marraskuun kausipoikkeamista.
+
+```{r}
+d <- seasonal_components |>
+  as_tibble() |>
+  filter(.model == "stl") |>
+  mutate(
+    Lukuvuosi = year(time - 7),
+    Lukuvuosi = paste(Lukuvuosi, Lukuvuosi+1, sep = "-\n"),
+    Ammattiryhmä =
+      str_replace(Ammattiryhmä, "^[:digit:]{4} ", "") |>
+      fct_inorder()
+  ) |>
+  group_by(Ammattiryhmä, Lukuvuosi) |>
+  filter(n() == 12) |>
+  summarise(
+    diff_lukukausi = mean(season_year[month(time) %in% c(1:4,9:11)]),
+    diff_heinäkuu = season_year[month(time) == 7],
+    diff_joulukuu = season_year[month(time) == 12],
+    .groups = "drop"
+  ) |>
+  mutate(
+    Kesätyöttömyys = diff_heinäkuu - diff_lukukausi,
+    Joulutyöttömyys = diff_joulukuu - diff_lukukausi
+  )
+
+```
+
+```{r}
+
+d |>
+  ggplot(aes(Lukuvuosi, Kesätyöttömyys, fill = Ammattiryhmä)) +
+  geom_col() +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Opettajien kesätyöttömyys ammattiryhmittäin",
+    subtitle = "Työtöntä työnhakijaa lukuvuoden jälkeisen heinäkuun lopussa verrattuna lukukauden aikaiseen työttömyyteen",
+    caption = "Lähteet: TEM ja Robonomistin laskelmat.",
+    y = NULL
+  )
+
+```
+
+Opettajien kesätyöttömyys on pysynyt viime likimain muuttumattomana. Lukuvuoden 2021-2022 jälkeisenä kesänä noin 7300 opettajaa jäi kesäksi työttömäksi.
+
+```{r}
+d |>
+  select(Ammattiryhmä, Lukuvuosi, Kesätyöttömyys) |>
+  arrange(desc(Lukuvuosi)) %>%
+  {
+    bind_rows(., with_groups(., Lukuvuosi, summarise,
+                             Ammattiryhmä = "Yhteensä",
+                             across(Kesätyöttömyys, sum)
+    ))
+  } %>%
+  mutate(Kesätyöttömyys = round(Kesätyöttömyys)) |>
+  pivot_wider(names_from = "Lukuvuosi",
+              values_from = Kesätyöttömyys) |>
+  reactable(columns = list(Ammattiryhmä = colDef(width = 200)),
+            defaultColDef = colDef(width = 70))
+```
+
+
+## Lisätietoja
+
+### Joulutyöttömyys
+
+```{r}
+d |>
+  ggplot(aes(Lukuvuosi, Joulutyöttömyys, fill = Ammattiryhmä)) +
+  geom_col() +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(breaks = seq(0, 1000, by = 200)) +
+  labs(
+    title = "Opettajien kesätyöttömyys ammattiryhmittäin",
+    subtitle = "Työtöntä työnhakijaa joulukuun lopussa verrattuna lukukauden aikaiseen työttömyyteen",
+    caption = "Lähteet: TEM ja Robonomistin laskelmat.",
+    y = NULL
+  )
+```
+
+### Työttömien työnhakijoiden määrä
+
+```{r}
+seasonal_components |>
+  as_tibble() |>
+  filter(.model == "stl") |>
+  mutate(
+    Lukuvuosi = year(time - 7),
+    Lukuvuosi = paste(Lukuvuosi, Lukuvuosi+1, sep = "-\n"),
+    Ammattiryhmä =
+      str_replace(Ammattiryhmä, "^[:digit:]{4} ", "") |>
+      fct_inorder()
+  ) |>
+  group_by(Ammattiryhmä, Lukuvuosi) |>
+  filter(n() == 12) |>
+  summarise(
+    `Lukukauden keskiarvo` = mean(value[month(time) %in% c(1:4,9:11)]),
+    Heinäkuu = value[month(time) == 7],
+    Joulukuu = value[month(time) == 12],
+    .groups = "drop"
+  ) |>
+  with_groups(Lukuvuosi, summarize,
+              across(-Ammattiryhmä, sum)
+              ) |>
+  mutate(across(-Lukuvuosi, round)) |>
+  reactable(defaultPageSize = 20)
+
+```

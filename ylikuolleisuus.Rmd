@@ -1,0 +1,192 @@
+---
+title: Ylikuolleisuus Suomessa
+date: 2022-12-23
+output:
+  html_document:
+    code_folding: "hide"
+---
+
+```{r setup, include = FALSE}
+library(tidyverse)
+library(tsibble)
+library(fable)
+library(feasts)
+library(lubridate)
+library(slider)
+```
+
+```{r}
+## d_tbl <-
+##   robonomistClient::data("StatFin/vamuu/statfin_vamuu_pxt_11ll.px§Kuolleet", tidy_time = TRUE)
+## saveRDS(d_tbl, "Kuolleet.rds")
+## väestöennuste <- data("StatFin/vaenn/statfin_vaenn_pxt_139e.px§§Kuol§Yht§(2021|2019)")
+## saveRDS(väestöennuste, "Väestöennuste.rds")
+d_tbl <- readRDS("Kuolleet.rds")
+
+kuolleet_1_11 <-
+  d_tbl |>
+  filter(year(time) == 2022, month(time) < 12) |>
+  tally(value) |> pull(n) |> as.integer()
+```
+
+Vuonna 2022 tammi-marraskuussa on kuollut yhteensä `r kuolleet_1_11` henkeä.
+
+```{r}
+
+d <-
+  d_tbl |>
+  mutate(time = yearmonth(time)) |>
+  as_tsibble(index = time)
+
+
+d |>
+  ggplot(aes(time, value)) +
+  geom_line() +
+  labs(
+    title = "Kuolleiden lukumäärä Suomessa",
+    subtitle = "Henkeä kuukaudessa",
+    caption = "Lähde: Tilastokeskus.", x=NULL, y=NULL
+  )
+```
+
+## Kausitasoitusmalli
+
+```{r, warning = FALSE}
+
+comp <-
+  d |>
+  model(
+    stl = STL(value ~ trend() + season()),
+    seats = X_13ARIMA_SEATS(value ~ seats())
+  ) |>
+  components()
+
+comp |>
+  autoplot()
+```
+
+```{r}
+seats <-
+  comp |>
+  filter(.model == "seats") |>
+  select(time, "Alkuperäinen" = value, "Trendi" = trend, "Kausitasoitettu" = season_adjust) |>
+  pivot_longer(-time, names_to = "Sarjatyyppi")
+
+seats |>
+  ggplot(aes(time, value, color = Sarjatyyppi)) +
+  geom_line() +
+  scale_x_yearmonth(date_breaks = "2 years", date_label = "%Y") +
+  labs(
+    title = "Kuolleiden lukumäärä Suomessa, SEATS-kaustasoitusmalli",
+    subtitle = "Henkeä kuukaudessa",
+    caption = "Lähteet: Tilastokeskus ja omat laskelmat.", x=NULL, y=NULL
+  )
+```
+
+## Kontrafaktuaali
+
+Ennustetaan kontrafaktuaali Arima-mallilla käyttäen SEATS-mallin trendisarjaa.
+
+```{r}
+seats_train <-
+  seats |>
+  filter(
+    Sarjatyyppi == "Trendi",
+    time < yearmonth("2021-07-01")
+  )
+
+seats_contrafactual <-
+  seats_train |>
+  model(
+    Arima = ARIMA(value)
+  ) |>
+  forecast(h = 18)
+
+seats |>
+  filter(Sarjatyyppi %in% c("Trendi", "Kausitasoitettu")) |>
+  ggplot(aes(time, value, color = Sarjatyyppi)) +
+  geom_line() +
+  geom_line(aes(y = .mean), #linetype = 8,
+            data = seats_contrafactual |> mutate(Sarjatyyppi = "Arima-ennuste")) +
+  theme_bw() +
+  scale_x_yearmonth(date_breaks = "2 years", date_label = "%Y", expand = expansion(c(0,0.03))) +
+  labs(
+    title = "Kuolleiden lukumäärä Suomessa",
+    subtitle = "Henkeä kuukaudessa",
+    caption = "Trendi ja kausitasoitettu sarja laskettu Seats-mallilla\nKontrafaktuaalinen Arima-mallin ennuste heinäkuusta 2021 alkaen.\nLähteet: Tilastokeskus ja omat laskelmat.", x=NULL, y=NULL, color = NULL
+  )
+ ## ggsave("Kuolleet.png", width = 9, height = 5)
+```
+
+## Ennuste joulukuussa 2022 kuolleiden määrästä
+
+```{r}
+seats_trendi <-
+  seats |>
+  filter(
+    Sarjatyyppi == "Trendi"
+  )
+
+seats_fc <-
+  seats_trendi |>
+  model(
+    Arima = ARIMA(value),
+    AR = AR(value)
+  ) |>
+  forecast(h = 1)
+
+seats_fc |>
+  autoplot(seats_trendi, alpha = 0.5, level = NULL, show_gap = FALSE) +
+  geom_line(aes(y = value, color = Sarjatyyppi),
+            data = seats |> filter(Sarjatyyppi %in% c("Trendi", "Kausitasoitettu"))) +
+  scale_x_yearmonth(date_breaks = "2 years", date_label = "%Y", expand = expansion(c(0,0.03))) +
+  labs(
+    title = "Kuolleiden lukumäärä Suomessa",
+    subtitle = "Henkeä kuukaudessa",
+    caption = "AR ja Arima mallien mukainen ennuste 12/2022 alkaen.\nLähteet: Tilastokeskus ja omat laskelmat.", x=NULL, y=NULL, color = NULL
+  )
+```
+
+## Tulokset
+
+Yhdistetään tiedot ja lasketaan ylikuolleiden määrä
+
+```{r}
+Historia <-
+  as_tibble(seats_trendi) |>
+  select(time, Historia = value)
+
+Ennuste <-
+  as_tibble(seats_fc) |>
+  filter(.model == "Arima") |>
+  select(time, Ennuste = .mean)
+
+Kontrafaktuaali <-
+  as_tibble(seats_contrafactual) |>
+  filter(.model == "Arima") |>
+  select(time, Kontrafaktuaali = .mean)
+
+Väestöennuste <-
+  readRDS("Väestöennuste.rds") |>
+  transmute(Vuosi = as.numeric(Vuosi), Väestöennuste, value) |>
+  pivot_wider(names_from = "Väestöennuste")
+
+Historia |>
+  full_join(Ennuste, by = "time") |>
+  full_join(Kontrafaktuaali, by = "time") |>
+  mutate(
+    Ennuste = coalesce(Historia, Ennuste),
+    Kontrafaktuaali = coalesce(Kontrafaktuaali, Historia),
+    time = as.Date(time)
+  ) |>
+  group_by(Vuosi = year(time)) |>
+  summarize(across(c(Historia, Ennuste, Kontrafaktuaali), sum)) |>
+  left_join(Väestöennuste, by = "Vuosi") |>
+  mutate(
+    `Ylikuolleisuus (trendiennuste)` = Ennuste - Kontrafaktuaali,
+    `Ylikuolleisuus (väestöennuste 2021)` = Ennuste - `Väestöennuste 2021`,
+    `Ylikuolleisuus (väestöennuste 2019)` = Ennuste - `Väestöennuste 2019`,
+  ) |>
+  tail(4) |>
+  knitr::kable(digit = 0)
+```

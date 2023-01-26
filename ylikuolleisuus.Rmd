@@ -190,3 +190,37 @@ Historia |>
   tail(4) |>
   knitr::kable(digit = 0)
 ```
+
+## Data päivitys
+
+```{r, include = require("robonomistClient")}
+d_tbl2 <-
+  robonomistClient::data("StatFin/vamuu/statfin_vamuu_pxt_11ll.px§Kuolleet", tidy_time = TRUE)
+fit <-
+  list(joulukuu = d_tbl, tammikuu = d_tbl2) |>
+  bind_rows(.id = "Vintage") |>
+  mutate(time = yearmonth(time)) |>
+  as_tsibble(key = Vintage, index = time) |>
+  model(
+    seats = X_13ARIMA_SEATS(value ~ seats())
+  )
+
+fit |>
+  components() |>
+  autoplot()
+
+fit |>
+  components() |>
+  filter(year(time) >= 2010) |>
+  select(Vintage, season_adjust, trend, time) |>
+  pivot_longer(c(trend, season_adjust), names_to = "Sarjatyyppi") |>
+  ggplot(aes(time, value, color = Vintage, linetype = Sarjatyyppi)) +
+  geom_line() +
+  scale_x_yearmonth(date_breaks = "2 years", date_labels = "%Y") +
+  labs(
+    title = "Kuolleiden määrä Suomessa",
+    subtitle = "Kuolleita kuukaudessa",
+    caption = "Lähteet: Tilastokeskus ja oma kausitasoitus",
+    x=NULL,y=NULL
+  )
+```

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Random Faces</title>
+    <style>
+        .smiley {
+            font-size: 24px;
+            display: inline-block;
+            margin: 10px;
+        }
+    </style>
+    <script>
+        function getSmileyCountFromUrl() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const count = urlParams.get('count');
+            return parseInt(count, 10) || 0;
+        }
+
+        function getRandomSmileyFace(emojiList) {
+            const randomIndex = Math.floor(Math.random() * emojiList.length);
+            return emojiList[randomIndex];
+        }
+
+        function createSmileyFaces(count, emojiList) {
+            const container = document.getElementById('smiley-container');
+            
+            for (let i = 0; i < count; i++) {
+                const smileyFace = getRandomSmileyFace(emojiList);
+                const smileyElement = document.createElement('span');
+                smileyElement.classList.add('smiley');
+                smileyElement.textContent = smileyFace;
+                container.appendChild(smileyElement);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const emojiList = ['👶','👧','🧒','👦','👩','🧑','👨','👩‍🦱','🧑‍🦱','👨‍🦱','👩‍🦰','🧑‍🦰','👨‍🦰','👱‍♀️','👱','👱‍♂️','👩‍🦳','🧑‍🦳','👨‍🦳','👩‍🦲','🧑‍🦲','👨‍🦲','🧔‍♀️','🧔','🧔‍♂️','👵','🧓','👴'
+];
+            const count = getSmileyCountFromUrl();
+            createSmileyFaces(count, emojiList);
+        });
+    </script>
+</head>
+<body>
+    <div id="smiley-container"></div>
+</body>
+</html>
+

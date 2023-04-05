@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Random Faces</title>
+    <title>N Random Faces</title>
     <style>
         .smiley {
             font-size: 24px;
@@ -25,7 +25,12 @@
 
         function createSmileyFaces(count, emojiList) {
             const container = document.getElementById('smiley-container');
-            
+
+            const title = document.createElement("h1");
+            const node = document.createTextNode(count + " people");
+            title.appendChild(node);
+            container.appendChild(title);
+
             for (let i = 0; i < count; i++) {
                 const smileyFace = getRandomSmileyFace(emojiList);
                 const smileyElement = document.createElement('span');

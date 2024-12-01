@@ -13,6 +13,8 @@
             <div class="col-md-12 text-center">
                 <h1 class="mb-4">Lumilyhty-arpajaisimulaattori</h1>
                 <p class="lead">Myytyjen arpojen määrä: <span id="totalTickets" class="fw-bold"></span></p>
+                <p class="lead">Arvottujen arpojen määrä: <span id="drawnTickets" class="fw-bold">0</span></p>
+                <p class="lead">Kokonaishinta: <span id="totalCost" class="fw-bold">0 €</span></p>
                 <button class="btn btn-primary btn-lg my-3" onclick="drawLottery()">Arvo arpa</button>
                 <p id="result" class="fs-5 text-success"></p>
             </div>
@@ -71,6 +73,9 @@
          return prizeRanges;
      }
 
+     var drawnTickets = 0; // Arvottujen arpojen määrä
+     var ticketPrice = 10; // Yhden arvan hinta
+
      function drawLottery() {
          var prizeRanges = calculatePrizeRanges(prizes);
          var randomTicket = Math.floor(Math.random() * totalTicketsSold) + 1;
@@ -90,8 +95,12 @@
          listItem.className = "list-group-item";
          resultList.insertBefore(listItem, resultList.firstChild);
 
-         var historySection = document.getElementById("historySection");
-         historySection.style.display = "block";
+         drawnTickets++; // Päivitetään arvottujen arpojen määrä
+         var totalCost = drawnTickets * ticketPrice; // Lasketaan kokonaishinta
+
+         // Päivitetään HTML
+         document.getElementById("drawnTickets").innerText = drawnTickets;
+         document.getElementById("totalCost").innerText = totalCost + " €";
      }
 
      function displayPrizes() {
